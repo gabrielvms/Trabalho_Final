@@ -10,4 +10,4 @@
   C:\ti\TivaWare_C_Series-2.2.0.295\driverlib\interrupt.h \
   C:\Users\gabri\AppData\Local\Arm\Packs\ARM\CMSIS\5.9.0\CMSIS\RTOS2\Include\cmsis_os2.h \
   C:\Keil_v5\ARM\ARMCLANG\Bin\..\include\stddef.h ..\Drivers\UART.h \
-  ..\Trabalho_Final\misc.h ..\Drivers\driverleds.h
+  ..\Trabalho_Final\misc.h

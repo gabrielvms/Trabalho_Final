@@ -15,7 +15,6 @@
 
 #include "UART.h"
 #include "misc.h"
-#include "driverleds.h" // device drivers
 
 #define MSGQUEUE_OBJECTS 16 // number of Message Queue Objects
 
@@ -34,13 +33,12 @@ void ChangeButtonStatus(char elevator, char floor, char status);
 void StopElevator(char elevator);
 void MovElevator(char elevator, char direction);
 void MovCommand(char* command, char actualFloor, char* targetFloor);
-void ProcessCommand(MsgObj msg, char actualFloor, char* targetFloor);
-void ProcessResponse(MsgObj msg, char* actualFloor);
+void SetMovement(char elevator, char actualFloor, char targetFloor);
 
 // Aux Functions
 void SetupUart(void);
 void UARTIntHandler(void);
-char GetFloorCharFromFloorNumberString(char* floorNumber);
+char GetFloorCharFromFloorNumberString(char floorNumber, char isHigher);
 
 /*----------------------------------------------------------------------------
  *      Global Variables
@@ -57,8 +55,6 @@ osMessageQueueId_t qidCentralResponses;
  *---------------------------------------------------------------------------*/
 int main(void)
 {
-  LEDInit(LED4 | LED3 | LED2 | LED1);
-
   osKernelInitialize(); // Initialize CMSIS-RTOS
 
   // Set threads, queues and mutex
@@ -100,11 +96,11 @@ void ThreadMain(void *argument)
 			{
 				if(msg.Size > 2)
 				{
-					osMessageQueuePut(qidCentralCommands, &msg, 0U, osWaitForever);
+					osMessageQueuePut(qidCentralCommands, &msg, 0U, 100U);
 				}
 				else
 				{
-					osMessageQueuePut(qidCentralResponses, &msg, 0U, osWaitForever);
+					osMessageQueuePut(qidCentralResponses, &msg, 0U, 100U);
 				}
 			}
     }
@@ -123,6 +119,7 @@ void ThreadCentral(void *argument)
 	char elevatorStatus = READY;
 	char actualFloor = FLOOR_0;
   char targetFloor = FLOOR_0;
+
 	
 
   while (1)
@@ -133,21 +130,49 @@ void ThreadCentral(void *argument)
 			if(statusCommand == osOK)
 			{
 				elevatorStatus = BUSY;
-				ProcessCommand(commandMsg, actualFloor, &targetFloor);
+				if (commandMsg.Size == 3)
+				{
+					targetFloor = commandMsg.Command[2];
+				}
+				else if (commandMsg.Size == 5)
+				{
+					targetFloor = GetFloorCharFromFloorNumberString(commandMsg.Command[3], commandMsg.Command[2]);
+				}
 			}
+
+			ChangeButtonStatus(commandMsg.Command[0], targetFloor, ON);
+			ChangeDoorStatus(commandMsg.Command[0], CLOSED);
 		}
 		else if(elevatorStatus == BUSY)
 		{
 			statusResponse = osMessageQueueGet(qidCentralResponses, &responseMsg, NULL, osWaitForever);
 			if(statusResponse == osOK)
 			{
-				ProcessResponse(commandMsg, &actualFloor);
+				if(responseMsg.Command[1] != 'A' && responseMsg.Command[1] != 'F')
+				{
+					if(responseMsg.Size == 2)
+					{
+						actualFloor = GetFloorCharFromFloorNumberString(responseMsg.Command[1], '0');
+					}
+					else if(responseMsg.Size == 3)
+					{
+						actualFloor = GetFloorCharFromFloorNumberString(responseMsg.Command[2], responseMsg.Command[1]);
+					}
+				}
+				else
+				{
+					if(responseMsg.Command[1] == 'F')
+					{
+						SetMovement(responseMsg.Command[0], actualFloor, targetFloor);
+					}
+				}
 			}
 		}
 		
 		if(actualFloor == targetFloor)
 		{
 			elevatorStatus = READY;
+			StopElevator(CENTRAL_ELEVATOR);
 			ChangeButtonStatus(CENTRAL_ELEVATOR, actualFloor, OFF);
 			ChangeDoorStatus(CENTRAL_ELEVATOR, OPEN);
 		}
@@ -190,43 +215,16 @@ void MovElevator(char elevator, char direction)
   UART_OutChar(END_COMMAND);
 }
 
-void ProcessCommand(MsgObj msg, char actualFloor, char *targetFloor)
-{
-  if (msg.Size == 3)
+void SetMovement(char elevator, char actualFloor, char targetFloor)
+{	
+	if ((int)targetFloor > (int)actualFloor)
   {
-    *targetFloor = msg.Command[2];
+    MovElevator(elevator, UP);
   }
-  else if (msg.Size == 5)
+  else if ((int)targetFloor < (int)actualFloor)
   {
-    *targetFloor = GetFloorCharFromFloorNumberString(strcat(&msg.Command[2],&msg.Command[3]));
+    MovElevator(elevator, DOWN);
   }
-	
-	ChangeButtonStatus(msg.Command[0], *targetFloor, ON);
-  ChangeDoorStatus(msg.Command[0], CLOSED);
-	
-	if ((int)*targetFloor > (int)actualFloor)
-  {
-    MovElevator(msg.Command[0], UP);
-  }
-  else if ((int)*targetFloor < (int)actualFloor)
-  {
-    MovElevator(msg.Command[0], DOWN);
-  }
-}
-
-void ProcessResponse(MsgObj msg, char *actualFloor)
-{
-	if(msg.Command[1] != 'A' && msg.Command[1] != 'F')
-	{
-		if(msg.Size == 2)
-		{
-			*actualFloor = GetFloorCharFromFloorNumberString(&msg.Command[1]);
-		}
-		else if(msg.Size == 3)
-		{
-			*actualFloor = GetFloorCharFromFloorNumberString(strcat(&msg.Command[1],&msg.Command[2]));
-		}
-	}
 }
 
 /*----------------------------------------------------------------------------
@@ -273,76 +271,44 @@ void UARTIntHandler()
   }
 }
 
-char GetFloorCharFromFloorNumberString(char* floorNumber)
+char GetFloorCharFromFloorNumberString(char floorNumber, char isHigher)
 {
-  switch (atoi(floorNumber))
-  {
-    case 0:
-      return FLOOR_0;
-      break;
-      
-    case 1:
-      return FLOOR_1;
-      break;
-      
-    case 2:
-      return FLOOR_2;
-      break;
-      
-    case 3:
-      return FLOOR_3;
-      break;
-      
-    case 4:
-      return FLOOR_4;
-      break;
-      
-    case 5:
-      return FLOOR_5;
-      break;
-      
-    case 6:
-      return FLOOR_6;
-      break;
-      
-    case 7:
-      return FLOOR_7;
-      break;
-      
-    case 8:
-      return FLOOR_8;
-      break;
-      
-    case 9:
-      return FLOOR_9;
-      break;
-      
-    case 10:
-      return FLOOR_10;
-      break;
-      
-    case 11:
-      return FLOOR_11;
-      break;
-      
-    case 12:
-      return FLOOR_12;
-      break;
-      
-    case 13:
-      return FLOOR_13;
-      break;
-      
-    case 14:
-      return FLOOR_14;
-      break;
-      
-    case 15:
-      return FLOOR_15;
-      break;
-      
-    default:
-      return FLOOR_0;
-      break;
-  }
+	if(isHigher == '0')
+	{
+		if(floorNumber == '0')
+			return FLOOR_0;
+		else if(floorNumber == '1')
+			return FLOOR_1; 
+		else if(floorNumber == '2')
+			return FLOOR_2; 
+		else if(floorNumber == '3')
+			return FLOOR_3; 
+		else if(floorNumber == '4')
+			return FLOOR_4; 
+		else if(floorNumber == '5')
+			return FLOOR_5; 
+		else if(floorNumber == '6')
+			return FLOOR_6; 
+		else if(floorNumber == '7')
+			return FLOOR_7; 
+		else if(floorNumber == '8')
+			return FLOOR_8; 
+		else if(floorNumber == '9')
+			return FLOOR_9; 
+	}
+	else
+	{
+		if(floorNumber == '0')
+			return FLOOR_10; 
+		else if(floorNumber == '1')
+			return FLOOR_11; 
+		else if(floorNumber == '2')
+			return FLOOR_12; 
+		else if(floorNumber == '3')
+			return FLOOR_13; 
+		else if(floorNumber == '4')
+			return FLOOR_14; 
+		else if(floorNumber == '5')
+			return FLOOR_15;
+	}
 }
