@@ -17,6 +17,10 @@
 
 #define OPEN 'a'
 #define CLOSED 'f'
+#define SIGNAL_OPEN 'A'
+#define SIGNAL_CLOSED 'F'
+#define BUTTON_TRIGGER_FROM_INSIDE 'I'
+#define BUTTON_TRIGGER_FROM_OUTSIDE 'E'
 
 #define ON 'L'
 #define OFF 'D'
