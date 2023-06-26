@@ -1,5 +1,4 @@
 #define MAX_HEIGHT 75000
-
 #define READY 'r'
 #define BUSY 'b'
 
@@ -8,8 +7,8 @@
 #define INIT_ELEVATOR 'r'
 
 #define CENTRAL_ELEVATOR 'c'
-#define RIGHT_ELEVATOR 'd'
 #define LEFT_ELEVATOR 'e'
+#define RIGHT_ELEVATOR 'd'
 
 #define UP 's'
 #define STOP 'p'

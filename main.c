@@ -8,6 +8,7 @@
 #include "inc/hw_memmap.h"
 
 #include "driverlib/sysctl.h"
+#include "driverlib/debug.h"
 #include "driverlib/uart.h"
 #include "driverlib/interrupt.h"
 
@@ -16,7 +17,7 @@
 #include "UART.h"
 #include "misc.h"
 
-#define MSGQUEUE_OBJECTS 16 // number of Message Queue Objects
+#define MSGQUEUE_OBJECTS 32	 // number of Message Queue Objects
 #define DelayDeComandos 3000 // number of Message Queue Objects
 
 /*----------------------------------------------------------------------------
@@ -24,10 +25,10 @@
  *---------------------------------------------------------------------------*/
 
 // Thread Functions
-void ThreadMain(void *argument);
+void ThreadController(void *argument);
 void ThreadCentral(void *argument);
-void ThreadEsquerdo(void *argument);
-void ThreadDireito(void *argument);
+void ThreadLeft(void *argument);
+void ThreadRight(void *argument);
 
 // Elevator Functions
 void InitElevators();
@@ -38,6 +39,8 @@ void StopElevator(char elevator);
 void MovElevator(char elevator, char direction);
 void MovCommand(char *command, char actualFloor, char *targetFloor);
 void SetMovement(char elevator, char actualFloor, char targetFloor);
+char SetDirection(char actualFloor, char targetFloor);
+void ManagerElevator(char elevator);
 
 // Aux Functions
 void SetupUart(void);
@@ -48,18 +51,10 @@ char GetFloorCharFromFloorNumberString(char floorNumber, char isHigher);
  *      Global Variables
  *---------------------------------------------------------------------------*/
 MsgObj uartMsg;
-osThreadId_t tidMain;
-osThreadId_t tidCentral;
-osThreadId_t tidEsquerdo;
-osThreadId_t tidDireito;
-osMessageQueueId_t qidMain;
-osMessageQueueId_t qidCentralCommands;
-osMessageQueueId_t qidCentralResponses;
-osMessageQueueId_t qidEsquerdoCommands;
-osMessageQueueId_t qidEsquerdoResponses;
-osMessageQueueId_t qidDireitoCommands;
-osMessageQueueId_t qidDireitoResponses;
-
+osThreadId_t tidController, tidCentral, tidLeft, tidRight;
+osMessageQueueId_t qidController;
+osMessageQueueId_t qidCentralCommands, qidLeftCommands, qidRightCommands;
+osMessageQueueId_t qidCentralResponses, qidLeftResponses, qidRightResponses;
 /*----------------------------------------------------------------------------
  *      Main Function
  *---------------------------------------------------------------------------*/
@@ -68,102 +63,94 @@ int main(void)
 	osKernelInitialize(); // Initialize CMSIS-RTOS
 
 	// Set threads, queues and mutex
-	tidMain = osThreadNew(ThreadMain, NULL, NULL);
 	tidCentral = osThreadNew(ThreadCentral, NULL, NULL);
-	tidEsquerdo = osThreadNew(ThreadEsquerdo, NULL, NULL);
-	tidDireito = osThreadNew(ThreadDireito, NULL, NULL);
-	
+	tidLeft = osThreadNew(ThreadLeft, NULL, NULL);
+	tidRight = osThreadNew(ThreadRight, NULL, NULL);
+
+	tidController = osThreadNew(ThreadController, NULL, NULL);
+
 	osThreadSetPriority(tidCentral, osPriorityAboveNormal);
 
-	qidMain = osMessageQueueNew(MSGQUEUE_OBJECTS * 3, sizeof(MsgObj), NULL);
+	qidController = osMessageQueueNew(MSGQUEUE_OBJECTS, sizeof(MsgObj), NULL);
+	if (qidController == NULL)
+		return (-1);
+
 	qidCentralCommands = osMessageQueueNew(MSGQUEUE_OBJECTS, sizeof(MsgObj), NULL);
+	if (qidCentralCommands == NULL)
+		return (-1);
+
 	qidCentralResponses = osMessageQueueNew(MSGQUEUE_OBJECTS, sizeof(MsgObj), NULL);
-	
-	qidEsquerdoCommands = osMessageQueueNew(MSGQUEUE_OBJECTS, sizeof(MsgObj), NULL);
-	qidEsquerdoResponses = osMessageQueueNew(MSGQUEUE_OBJECTS, sizeof(MsgObj), NULL);
-	
-	qidDireitoCommands = osMessageQueueNew(MSGQUEUE_OBJECTS, sizeof(MsgObj), NULL);
-	qidDireitoResponses = osMessageQueueNew(MSGQUEUE_OBJECTS, sizeof(MsgObj), NULL);
+	if (qidCentralResponses == NULL)
+		return (-1);
+
+	qidLeftCommands = osMessageQueueNew(MSGQUEUE_OBJECTS, sizeof(MsgObj), NULL);
+	if (qidLeftCommands == NULL)
+		return (-1);
+	qidLeftResponses = osMessageQueueNew(MSGQUEUE_OBJECTS, sizeof(MsgObj), NULL);
+	if (qidLeftResponses == NULL)
+		return (-1);
+
+	qidRightCommands = osMessageQueueNew(MSGQUEUE_OBJECTS, sizeof(MsgObj), NULL);
+	if (qidRightCommands == NULL)
+		return (-1);
+	qidRightResponses = osMessageQueueNew(MSGQUEUE_OBJECTS, sizeof(MsgObj), NULL);
+	if (qidRightResponses == NULL)
+		return (-1);
 
 	if (osKernelGetState() == osKernelReady)
 	{
 		IntMasterEnable(); // Enable interruptions
 		SetupUart();	   // Set UART configuration
 
-		//InitElevator(CENTRAL_ELEVATOR);
 		InitElevators();
 
 		osKernelStart(); // Start thread execution
 	}
 
 	while (1)
-	{
-	};
+		;
 }
 
 /*----------------------------------------------------------------------------
  *      Threads Functions
  *---------------------------------------------------------------------------*/
 
-void ThreadMain(void *argument)
+void ThreadController(void *argument)
 {
 	osStatus_t status;
 	MsgObj msg;
 
 	while (1)
 	{
-		status = osMessageQueueGet(qidMain, &msg, NULL, osWaitForever);
+		status = osMessageQueueGet(qidController, &msg, 0U, osWaitForever);
 		if (status == osOK)
 		{
+			if (msg.Command[1] == BUTTON_TRIGGER_FROM_INSIDE)
+				ChangeButtonStatus(msg.Command[0], msg.Command[2], ON);
+
 			if (msg.Command[0] == CENTRAL_ELEVATOR)
 			{
-				if(msg.Command[1] == BUTTON_TRIGGER_FROM_INSIDE)
-				{
-						ChangeButtonStatus(CENTRAL_ELEVATOR, msg.Command[2], ON);
-				}
-				
-				if (msg.Size > 2)
-				{
-					osMessageQueuePut(qidCentralCommands, &msg, 0U, osWaitForever);
-				}
+				if ((msg.Size == 2) || ((msg.Size == 3) && (msg.Command[1] == '1')))
+					osMessageQueuePut(qidCentralResponses, &msg, osPriorityHigh, 0U);
 				else
-				{
-					osMessageQueuePut(qidCentralResponses, &msg, 0U, osWaitForever);
-				}
+					osMessageQueuePut(qidCentralCommands, &msg, 0U, 0U);
 			}
 			else if (msg.Command[0] == LEFT_ELEVATOR)
 			{
-				if(msg.Command[1] == BUTTON_TRIGGER_FROM_INSIDE)
-				{
-						ChangeButtonStatus(LEFT_ELEVATOR, msg.Command[2], ON);
-				}
-				
-				if (msg.Size > 2)
-				{
-					osMessageQueuePut(qidEsquerdoCommands, &msg, 0U, osWaitForever);
-				}
+				if ((msg.Size == 2) || ((msg.Size == 3) && (msg.Command[1] == '1')))
+					osMessageQueuePut(qidLeftResponses, &msg, osPriorityHigh, 0U);
 				else
-				{
-					osMessageQueuePut(qidEsquerdoResponses, &msg, 0U, osWaitForever);
-				}
+					osMessageQueuePut(qidLeftCommands, &msg, 0U, osWaitForever);
 			}
 			else if (msg.Command[0] == RIGHT_ELEVATOR)
 			{
-				if(msg.Command[1] == BUTTON_TRIGGER_FROM_INSIDE)
-				{
-						ChangeButtonStatus(RIGHT_ELEVATOR, msg.Command[2], ON);
-				}
-				
-				if (msg.Size > 2)
-				{
-					osMessageQueuePut(qidDireitoCommands, &msg, 0U, osWaitForever);
-				}
+				if ((msg.Size == 2) || ((msg.Size == 3) && (msg.Command[1] == '1')))
+					osMessageQueuePut(qidRightResponses, &msg, osPriorityHigh, 0U);
 				else
-				{
-					osMessageQueuePut(qidDireitoResponses, &msg, 0U, osWaitForever);
-				}
+					osMessageQueuePut(qidRightCommands, &msg, 0U, osWaitForever);
 			}
 		}
+		osThreadYield(); // suspend thread
 	}
 }
 
@@ -174,72 +161,70 @@ void ThreadCentral(void *argument)
 {
 	osStatus_t statusCommand;
 	osStatus_t statusResponse;
+	
 	MsgObj commandMsg;
 	MsgObj responseMsg;
 	char elevatorStatus = READY;
 	char actualFloor = FLOOR_0;
 	char targetFloor = FLOOR_0;
+	char elevator = CENTRAL_ELEVATOR;
+	uint32_t status;
 
 	while (1)
 	{
-		if (elevatorStatus == READY)
+		if (elevatorStatus == BUSY)
 		{
-			statusCommand = osMessageQueueGet(qidCentralCommands, &commandMsg, NULL, osWaitForever);
+			if (actualFloor == targetFloor)
+			{
+				StopElevator(elevator);
+				ChangeButtonStatus(elevator, actualFloor, OFF);
+				ChangeDoorStatus(elevator, OPEN);
+				elevatorStatus = READY;
+				osDelay(DelayDeComandos);
+			}
+			else
+			{
+				statusResponse = osMessageQueueGet(qidCentralResponses, &responseMsg, 0U, osWaitForever);
+				if (statusResponse == osOK)
+				{
+					if (responseMsg.Command[1] != SIGNAL_OPEN && responseMsg.Command[1] != SIGNAL_CLOSED)
+					{
+						if (responseMsg.Size == 2)
+							actualFloor = GetFloorCharFromFloorNumberString(responseMsg.Command[1], '0');
+						else if (responseMsg.Size == 3)
+							actualFloor = GetFloorCharFromFloorNumberString(responseMsg.Command[2], responseMsg.Command[1]);
+
+						if (actualFloor == targetFloor)
+							StopElevator(elevator);
+					}
+					else
+					{
+						if (responseMsg.Command[1] == SIGNAL_CLOSED)
+							SetMovement(elevator, actualFloor, targetFloor);
+					}
+				}
+			}
+		}
+		else
+		{
+			statusCommand = osMessageQueueGet(qidCentralCommands, &commandMsg, 0U, osWaitForever);
 			if (statusCommand == osOK)
 			{
 				elevatorStatus = BUSY;
+
 				if (commandMsg.Size == 3)
-				{
 					targetFloor = commandMsg.Command[2];
-				}
+
 				else if (commandMsg.Size == 5)
-				{
 					targetFloor = GetFloorCharFromFloorNumberString(commandMsg.Command[3], commandMsg.Command[2]);
-				}
-			}
 
-			//ChangeButtonStatus(commandMsg.Command[0], targetFloor, ON);
-			ChangeDoorStatus(commandMsg.Command[0], CLOSED);
-		}
-		else if (elevatorStatus == BUSY)
-		{
-			statusResponse = osMessageQueueGet(qidCentralResponses, &responseMsg, NULL, osWaitForever);
-			if (statusResponse == osOK)
-			{
-				if (responseMsg.Command[1] != SIGNAL_OPEN && responseMsg.Command[1] != SIGNAL_CLOSED)
-				{
-					if (responseMsg.Size == 2)
-					{
-						actualFloor = GetFloorCharFromFloorNumberString(responseMsg.Command[1], '0');
-					}
-					else if (responseMsg.Size == 3)
-					{
-						actualFloor = GetFloorCharFromFloorNumberString(responseMsg.Command[2], responseMsg.Command[1]);
-					}
-				}
-				else
-				{
-					if (responseMsg.Command[1] == SIGNAL_CLOSED)
-					{
-						SetMovement(responseMsg.Command[0], actualFloor, targetFloor);
-					}
-				}
+				ChangeDoorStatus(commandMsg.Command[0], CLOSED);
 			}
 		}
-
-		if (actualFloor == targetFloor)
-		{
-			elevatorStatus = READY;
-			StopElevator(CENTRAL_ELEVATOR);
-			ChangeButtonStatus(CENTRAL_ELEVATOR, actualFloor, OFF);
-			ChangeDoorStatus(CENTRAL_ELEVATOR, OPEN);
-			osDelay(DelayDeComandos);
-		}
-		//osThreadYield();                                            // suspend thread
 	}
 }
 
-void ThreadEsquerdo(void *argument)
+void ThreadLeft(void *argument)
 {
 	osStatus_t statusCommand;
 	osStatus_t statusResponse;
@@ -248,68 +233,63 @@ void ThreadEsquerdo(void *argument)
 	char elevatorStatus = READY;
 	char actualFloor = FLOOR_0;
 	char targetFloor = FLOOR_0;
+	char elevator = LEFT_ELEVATOR;
 
 	while (1)
 	{
-		if (elevatorStatus == READY)
+		if (elevatorStatus == BUSY)
 		{
-			statusCommand = osMessageQueueGet(qidEsquerdoCommands, &commandMsg, NULL, osWaitForever);
+			if (actualFloor == targetFloor)
+			{
+				StopElevator(elevator);
+				ChangeButtonStatus(elevator, actualFloor, OFF);
+				ChangeDoorStatus(elevator, OPEN);
+				elevatorStatus = READY;
+				osDelay(DelayDeComandos);
+			}
+			else
+			{
+				statusResponse = osMessageQueueGet(qidLeftResponses, &responseMsg, 0U, osWaitForever);
+				if (statusResponse == osOK)
+				{
+					if (responseMsg.Command[1] != SIGNAL_OPEN && responseMsg.Command[1] != SIGNAL_CLOSED)
+					{
+						if (responseMsg.Size == 2)
+							actualFloor = GetFloorCharFromFloorNumberString(responseMsg.Command[1], '0');
+						else if (responseMsg.Size == 3)
+							actualFloor = GetFloorCharFromFloorNumberString(responseMsg.Command[2], responseMsg.Command[1]);
+
+						if (actualFloor == targetFloor)
+							StopElevator(elevator);
+					}
+					else
+					{
+						if (responseMsg.Command[1] == SIGNAL_CLOSED)
+							SetMovement(elevator, actualFloor, targetFloor);
+					}
+				}
+			}
+		}
+		else
+		{
+			statusCommand = osMessageQueueGet(qidLeftCommands, &commandMsg, 0U, osWaitForever);
 			if (statusCommand == osOK)
 			{
 				elevatorStatus = BUSY;
+
 				if (commandMsg.Size == 3)
-				{
 					targetFloor = commandMsg.Command[2];
-				}
+
 				else if (commandMsg.Size == 5)
-				{
 					targetFloor = GetFloorCharFromFloorNumberString(commandMsg.Command[3], commandMsg.Command[2]);
-				}
-			}
 
-			//ChangeButtonStatus(commandMsg.Command[0], targetFloor, ON);
-			ChangeDoorStatus(commandMsg.Command[0], CLOSED);
-		}
-		else if (elevatorStatus == BUSY)
-		{
-			statusResponse = osMessageQueueGet(qidEsquerdoResponses, &responseMsg, NULL, osWaitForever);
-			if (statusResponse == osOK)
-			{
-				if (responseMsg.Command[1] != SIGNAL_OPEN && responseMsg.Command[1] != SIGNAL_CLOSED)
-				{
-					if (responseMsg.Size == 2)
-					{
-						actualFloor = GetFloorCharFromFloorNumberString(responseMsg.Command[1], '0');
-					}
-					else if (responseMsg.Size == 3)
-					{
-						actualFloor = GetFloorCharFromFloorNumberString(responseMsg.Command[2], responseMsg.Command[1]);
-					}
-				}
-				else
-				{
-					if (responseMsg.Command[1] == SIGNAL_CLOSED)
-					{
-						SetMovement(responseMsg.Command[0], actualFloor, targetFloor);
-					}
-				}
+				ChangeDoorStatus(commandMsg.Command[0], CLOSED);
 			}
 		}
-
-		if (actualFloor == targetFloor)
-		{
-			elevatorStatus = READY;
-			StopElevator(LEFT_ELEVATOR);
-			ChangeButtonStatus(LEFT_ELEVATOR, actualFloor, OFF);
-			ChangeDoorStatus(LEFT_ELEVATOR, OPEN);
-			osDelay(DelayDeComandos);
-		}
-		//osThreadYield();                                            // suspend thread
 	}
 }
 
-
-void ThreadDireito(void *argument)
+void ThreadRight(void *argument)
 {
 	osStatus_t statusCommand;
 	osStatus_t statusResponse;
@@ -318,79 +298,67 @@ void ThreadDireito(void *argument)
 	char elevatorStatus = READY;
 	char actualFloor = FLOOR_0;
 	char targetFloor = FLOOR_0;
+	char elevator = RIGHT_ELEVATOR;
 
-	while (1)
+		while (1)
 	{
-		if (elevatorStatus == READY)
+		if (elevatorStatus == BUSY)
 		{
-			statusCommand = osMessageQueueGet(qidDireitoCommands, &commandMsg, NULL, osWaitForever);
+			if (actualFloor == targetFloor)
+			{
+				StopElevator(elevator);
+				ChangeButtonStatus(elevator, actualFloor, OFF);
+				ChangeDoorStatus(elevator, OPEN);
+				elevatorStatus = READY;
+				osDelay(DelayDeComandos);
+			}
+			else
+			{
+				statusResponse = osMessageQueueGet(qidRightResponses, &responseMsg, 0U, osWaitForever);
+				if (statusResponse == osOK)
+				{
+					if (responseMsg.Command[1] != SIGNAL_OPEN && responseMsg.Command[1] != SIGNAL_CLOSED)
+					{
+						if (responseMsg.Size == 2)
+							actualFloor = GetFloorCharFromFloorNumberString(responseMsg.Command[1], '0');
+						else if (responseMsg.Size == 3)
+							actualFloor = GetFloorCharFromFloorNumberString(responseMsg.Command[2], responseMsg.Command[1]);
+
+						if (actualFloor == targetFloor)
+							StopElevator(elevator);
+					}
+					else
+					{
+						if (responseMsg.Command[1] == SIGNAL_CLOSED)
+							SetMovement(elevator, actualFloor, targetFloor);
+					}
+				}
+			}
+		}
+		else
+		{
+			statusCommand = osMessageQueueGet(qidRightCommands, &commandMsg, 0U, osWaitForever);
 			if (statusCommand == osOK)
 			{
 				elevatorStatus = BUSY;
+
 				if (commandMsg.Size == 3)
-				{
 					targetFloor = commandMsg.Command[2];
-				}
+
 				else if (commandMsg.Size == 5)
-				{
 					targetFloor = GetFloorCharFromFloorNumberString(commandMsg.Command[3], commandMsg.Command[2]);
-				}
-			}
 
-			//ChangeButtonStatus(commandMsg.Command[0], targetFloor, ON);
-			ChangeDoorStatus(commandMsg.Command[0], CLOSED);
-		}
-		else if (elevatorStatus == BUSY)
-		{
-			statusResponse = osMessageQueueGet(qidDireitoResponses, &responseMsg, NULL, osWaitForever);
-			if (statusResponse == osOK)
-			{
-				if (responseMsg.Command[1] != SIGNAL_OPEN && responseMsg.Command[1] != SIGNAL_CLOSED)
-				{
-					if (responseMsg.Size == 2)
-					{
-						actualFloor = GetFloorCharFromFloorNumberString(responseMsg.Command[1], '0');
-					}
-					else if (responseMsg.Size == 3)
-					{
-						actualFloor = GetFloorCharFromFloorNumberString(responseMsg.Command[2], responseMsg.Command[1]);
-					}
-				}
-				else
-				{
-					if (responseMsg.Command[1] == SIGNAL_CLOSED)
-					{
-						SetMovement(responseMsg.Command[0], actualFloor, targetFloor);
-					}
-				}
+				ChangeDoorStatus(commandMsg.Command[0], CLOSED);
 			}
 		}
-
-		if (actualFloor == targetFloor)
-		{
-			elevatorStatus = READY;
-			StopElevator(RIGHT_ELEVATOR);
-			ChangeButtonStatus(RIGHT_ELEVATOR, actualFloor, OFF);
-			ChangeDoorStatus(RIGHT_ELEVATOR, OPEN);
-			osDelay(DelayDeComandos);
-		}
-		//osThreadYield();                                            // suspend thread
 	}
 }
 
 void InitElevators()
 {
-	UART_OutChar(LEFT_ELEVATOR);
-	UART_OutChar(INIT_ELEVATOR);
-	UART_OutChar(END_COMMAND);
-	
-	UART_OutChar(CENTRAL_ELEVATOR);
-	UART_OutChar(INIT_ELEVATOR);
-	UART_OutChar(END_COMMAND);
-	
-	UART_OutChar(RIGHT_ELEVATOR);
-	UART_OutChar(INIT_ELEVATOR);
-	UART_OutChar(END_COMMAND);
+	InitElevator(LEFT_ELEVATOR);
+	InitElevator(CENTRAL_ELEVATOR);
+	InitElevator(RIGHT_ELEVATOR);
 }
 void InitElevator(char elevator)
 {
@@ -430,14 +398,16 @@ void MovElevator(char elevator, char direction)
 
 void SetMovement(char elevator, char actualFloor, char targetFloor)
 {
+	MovElevator(elevator, SetDirection(actualFloor, targetFloor));
+}
+char SetDirection(char actualFloor, char targetFloor)
+{
 	if ((int)targetFloor > (int)actualFloor)
-	{
-		MovElevator(elevator, UP);
-	}
+		return UP;
 	else if ((int)targetFloor < (int)actualFloor)
-	{
-		MovElevator(elevator, DOWN);
-	}
+		return DOWN;
+
+	return STOP;
 }
 
 /*----------------------------------------------------------------------------
@@ -478,8 +448,9 @@ void UARTIntHandler()
 		}
 		else
 		{
-			osMessageQueuePut(qidMain, &uartMsg, 0U, 0U);
+			osMessageQueuePut(qidController, &uartMsg, 0U, 0U);
 			uartMsg.Size = 0;
+			strcpy(uartMsg.Command, "         ");
 		}
 	}
 }
