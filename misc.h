@@ -6,6 +6,11 @@
 
 #define INIT_ELEVATOR 'r'
 
+#define CENTRAL 0
+#define LEFT 1
+#define RIGHT 2
+#define NONE 4
+
 #define CENTRAL_ELEVATOR 'c'
 #define LEFT_ELEVATOR 'e'
 #define RIGHT_ELEVATOR 'd'
@@ -45,3 +50,11 @@ typedef struct {                                // object data type
   char Command[10];
   int Size;
 } MsgObj;
+
+typedef struct {
+ int elevatorId;
+ char actualFloor;
+ char targetFloor;
+ char elevatorStatus;
+ char direction; // s: parado, s: para cima, d: para baixo
+} Elevator;

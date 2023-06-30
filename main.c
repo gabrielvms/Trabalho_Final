@@ -46,6 +46,7 @@ void ManagerElevator(char elevator);
 void SetupUart(void);
 void UARTIntHandler(void);
 char GetFloorCharFromFloorNumberString(char floorNumber, char isHigher);
+int GetFloorIntFromFloorNumberChar(char floorNumberUnit, char floorNumberDezena, char floor);
 
 /*----------------------------------------------------------------------------
  *      Global Variables
@@ -55,6 +56,8 @@ osThreadId_t tidController, tidCentral, tidLeft, tidRight;
 osMessageQueueId_t qidController;
 osMessageQueueId_t qidCentralCommands, qidLeftCommands, qidRightCommands;
 osMessageQueueId_t qidCentralResponses, qidLeftResponses, qidRightResponses;
+
+Elevator elevators[3];
 /*----------------------------------------------------------------------------
  *      Main Function
  *---------------------------------------------------------------------------*/
@@ -128,26 +131,62 @@ void ThreadController(void *argument)
 			if (msg.Command[1] == BUTTON_TRIGGER_FROM_INSIDE)
 				ChangeButtonStatus(msg.Command[0], msg.Command[2], ON);
 
-			if (msg.Command[0] == CENTRAL_ELEVATOR)
+			// Resposta
+			if ((msg.Size == 2) || ((msg.Size == 3) && (msg.Command[1] == '1')))
 			{
-				if ((msg.Size == 2) || ((msg.Size == 3) && (msg.Command[1] == '1')))
+				if (msg.Command[0] == CENTRAL_ELEVATOR)
 					osMessageQueuePut(qidCentralResponses, &msg, osPriorityHigh, 0U);
-				else
-					osMessageQueuePut(qidCentralCommands, &msg, 0U, 0U);
-			}
-			else if (msg.Command[0] == LEFT_ELEVATOR)
-			{
-				if ((msg.Size == 2) || ((msg.Size == 3) && (msg.Command[1] == '1')))
+				else if (msg.Command[0] == LEFT_ELEVATOR)
 					osMessageQueuePut(qidLeftResponses, &msg, osPriorityHigh, 0U);
 				else
-					osMessageQueuePut(qidLeftCommands, &msg, 0U, osWaitForever);
-			}
-			else if (msg.Command[0] == RIGHT_ELEVATOR)
-			{
-				if ((msg.Size == 2) || ((msg.Size == 3) && (msg.Command[1] == '1')))
 					osMessageQueuePut(qidRightResponses, &msg, osPriorityHigh, 0U);
+			}
+			// Comando
+			else
+			{
+				int elevadorParaAtender = NONE;
+				if (msg.Command[1] == BUTTON_TRIGGER_FROM_OUTSIDE)
+				{
+					int targetFloor = GetFloorIntFromFloorNumberChar(msg.Command[3], msg.Command[2], ' ');
+					int distMin = 16;
+					int distancia = 16;
+					int actualFloor = 16;
+
+					for (int i = 0; i < 3; i++)
+					{
+						if (elevators[i].elevatorStatus == BUSY)
+							continue;
+
+						actualFloor = GetFloorIntFromFloorNumberChar(' ', ' ', elevators[i].actualFloor);
+						distancia = abs(actualFloor - targetFloor);
+
+						if (distancia <= distMin)
+						{
+							distMin = distancia;
+							elevadorParaAtender = i;
+						}
+					}
+				}
+				// Atende Otimizado
+				if (elevadorParaAtender != NONE)
+				{
+					if (elevadorParaAtender == CENTRAL)
+						osMessageQueuePut(qidCentralCommands, &msg, 0U, osWaitForever);
+					else if (elevadorParaAtender == LEFT)
+						osMessageQueuePut(qidLeftCommands, &msg, 0U, osWaitForever);
+					else
+						osMessageQueuePut(qidRightCommands, &msg, 0U, osWaitForever);
+				}
+				// Atende o pedido normalmente
 				else
-					osMessageQueuePut(qidRightCommands, &msg, 0U, osWaitForever);
+				{
+					if (msg.Command[0] == CENTRAL_ELEVATOR)
+						osMessageQueuePut(qidCentralCommands, &msg, 0U, osWaitForever);
+					else if (msg.Command[0] == LEFT_ELEVATOR)
+						osMessageQueuePut(qidLeftCommands, &msg, 0U, osWaitForever);
+					else
+						osMessageQueuePut(qidRightCommands, &msg, 0U, osWaitForever);
+				}
 			}
 		}
 		osThreadYield(); // suspend thread
@@ -161,26 +200,28 @@ void ThreadCentral(void *argument)
 {
 	osStatus_t statusCommand;
 	osStatus_t statusResponse;
-	
+
 	MsgObj commandMsg;
 	MsgObj responseMsg;
-	char elevatorStatus = READY;
-	char actualFloor = FLOOR_0;
-	char targetFloor = FLOOR_0;
 	char elevator = CENTRAL_ELEVATOR;
+	int intElevator = CENTRAL;
+
+	elevators[intElevator].elevatorStatus = READY;
+	elevators[intElevator].actualFloor = FLOOR_0;
+	elevators[intElevator].targetFloor = FLOOR_0;
 	uint32_t status;
 
 	while (1)
 	{
-		if (elevatorStatus == BUSY)
+		if (elevators[intElevator].elevatorStatus == BUSY)
 		{
-			if (actualFloor == targetFloor)
+			if (elevators[intElevator].actualFloor == elevators[intElevator].targetFloor)
 			{
 				StopElevator(elevator);
-				ChangeButtonStatus(elevator, actualFloor, OFF);
+				ChangeButtonStatus(elevator, elevators[intElevator].actualFloor, OFF);
 				ChangeDoorStatus(elevator, OPEN);
-				elevatorStatus = READY;
 				osDelay(DelayDeComandos);
+				elevators[intElevator].elevatorStatus = READY;
 			}
 			else
 			{
@@ -190,17 +231,17 @@ void ThreadCentral(void *argument)
 					if (responseMsg.Command[1] != SIGNAL_OPEN && responseMsg.Command[1] != SIGNAL_CLOSED)
 					{
 						if (responseMsg.Size == 2)
-							actualFloor = GetFloorCharFromFloorNumberString(responseMsg.Command[1], '0');
+							elevators[intElevator].actualFloor = GetFloorCharFromFloorNumberString(responseMsg.Command[1], '0');
 						else if (responseMsg.Size == 3)
-							actualFloor = GetFloorCharFromFloorNumberString(responseMsg.Command[2], responseMsg.Command[1]);
+							elevators[intElevator].actualFloor = GetFloorCharFromFloorNumberString(responseMsg.Command[2], responseMsg.Command[1]);
 
-						if (actualFloor == targetFloor)
+						if (elevators[intElevator].actualFloor == elevators[intElevator].targetFloor)
 							StopElevator(elevator);
 					}
 					else
 					{
 						if (responseMsg.Command[1] == SIGNAL_CLOSED)
-							SetMovement(elevator, actualFloor, targetFloor);
+							SetMovement(elevator, elevators[intElevator].actualFloor, elevators[intElevator].targetFloor);
 					}
 				}
 			}
@@ -210,15 +251,15 @@ void ThreadCentral(void *argument)
 			statusCommand = osMessageQueueGet(qidCentralCommands, &commandMsg, 0U, osWaitForever);
 			if (statusCommand == osOK)
 			{
-				elevatorStatus = BUSY;
+				elevators[intElevator].elevatorStatus = BUSY;
 
 				if (commandMsg.Size == 3)
-					targetFloor = commandMsg.Command[2];
+					elevators[intElevator].targetFloor = commandMsg.Command[2];
 
 				else if (commandMsg.Size == 5)
-					targetFloor = GetFloorCharFromFloorNumberString(commandMsg.Command[3], commandMsg.Command[2]);
+					elevators[intElevator].targetFloor = GetFloorCharFromFloorNumberString(commandMsg.Command[3], commandMsg.Command[2]);
 
-				ChangeDoorStatus(commandMsg.Command[0], CLOSED);
+				ChangeDoorStatus(elevator, CLOSED);
 			}
 		}
 	}
@@ -230,22 +271,23 @@ void ThreadLeft(void *argument)
 	osStatus_t statusResponse;
 	MsgObj commandMsg;
 	MsgObj responseMsg;
-	char elevatorStatus = READY;
-	char actualFloor = FLOOR_0;
-	char targetFloor = FLOOR_0;
 	char elevator = LEFT_ELEVATOR;
+	int intElevator = LEFT;
+	elevators[intElevator].elevatorStatus = READY;
+	elevators[intElevator].actualFloor = FLOOR_0;
+	elevators[intElevator].targetFloor = FLOOR_0;
 
 	while (1)
 	{
-		if (elevatorStatus == BUSY)
+		if (elevators[intElevator].elevatorStatus == BUSY)
 		{
-			if (actualFloor == targetFloor)
+			if (elevators[intElevator].actualFloor == elevators[intElevator].targetFloor)
 			{
 				StopElevator(elevator);
-				ChangeButtonStatus(elevator, actualFloor, OFF);
+				ChangeButtonStatus(elevator, elevators[intElevator].actualFloor, OFF);
 				ChangeDoorStatus(elevator, OPEN);
-				elevatorStatus = READY;
 				osDelay(DelayDeComandos);
+				elevators[intElevator].elevatorStatus = READY;
 			}
 			else
 			{
@@ -255,17 +297,17 @@ void ThreadLeft(void *argument)
 					if (responseMsg.Command[1] != SIGNAL_OPEN && responseMsg.Command[1] != SIGNAL_CLOSED)
 					{
 						if (responseMsg.Size == 2)
-							actualFloor = GetFloorCharFromFloorNumberString(responseMsg.Command[1], '0');
+							elevators[intElevator].actualFloor = GetFloorCharFromFloorNumberString(responseMsg.Command[1], '0');
 						else if (responseMsg.Size == 3)
-							actualFloor = GetFloorCharFromFloorNumberString(responseMsg.Command[2], responseMsg.Command[1]);
+							elevators[intElevator].actualFloor = GetFloorCharFromFloorNumberString(responseMsg.Command[2], responseMsg.Command[1]);
 
-						if (actualFloor == targetFloor)
+						if (elevators[intElevator].actualFloor == elevators[intElevator].targetFloor)
 							StopElevator(elevator);
 					}
 					else
 					{
 						if (responseMsg.Command[1] == SIGNAL_CLOSED)
-							SetMovement(elevator, actualFloor, targetFloor);
+							SetMovement(elevator, elevators[intElevator].actualFloor, elevators[intElevator].targetFloor);
 					}
 				}
 			}
@@ -275,15 +317,15 @@ void ThreadLeft(void *argument)
 			statusCommand = osMessageQueueGet(qidLeftCommands, &commandMsg, 0U, osWaitForever);
 			if (statusCommand == osOK)
 			{
-				elevatorStatus = BUSY;
+				elevators[intElevator].elevatorStatus = BUSY;
 
 				if (commandMsg.Size == 3)
-					targetFloor = commandMsg.Command[2];
+					elevators[intElevator].targetFloor = commandMsg.Command[2];
 
 				else if (commandMsg.Size == 5)
-					targetFloor = GetFloorCharFromFloorNumberString(commandMsg.Command[3], commandMsg.Command[2]);
+					elevators[intElevator].targetFloor = GetFloorCharFromFloorNumberString(commandMsg.Command[3], commandMsg.Command[2]);
 
-				ChangeDoorStatus(commandMsg.Command[0], CLOSED);
+				ChangeDoorStatus(elevator, CLOSED);
 			}
 		}
 	}
@@ -295,22 +337,23 @@ void ThreadRight(void *argument)
 	osStatus_t statusResponse;
 	MsgObj commandMsg;
 	MsgObj responseMsg;
-	char elevatorStatus = READY;
-	char actualFloor = FLOOR_0;
-	char targetFloor = FLOOR_0;
 	char elevator = RIGHT_ELEVATOR;
+	int intElevator = RIGHT;
+	elevators[intElevator].elevatorStatus = READY;
+	elevators[intElevator].actualFloor = FLOOR_0;
+	elevators[intElevator].targetFloor = FLOOR_0;
 
-		while (1)
+	while (1)
 	{
-		if (elevatorStatus == BUSY)
+		if (elevators[intElevator].elevatorStatus == BUSY)
 		{
-			if (actualFloor == targetFloor)
+			if (elevators[intElevator].actualFloor == elevators[intElevator].targetFloor)
 			{
 				StopElevator(elevator);
-				ChangeButtonStatus(elevator, actualFloor, OFF);
+				ChangeButtonStatus(elevator, elevators[intElevator].actualFloor, OFF);
 				ChangeDoorStatus(elevator, OPEN);
-				elevatorStatus = READY;
 				osDelay(DelayDeComandos);
+				elevators[intElevator].elevatorStatus = READY;
 			}
 			else
 			{
@@ -320,17 +363,17 @@ void ThreadRight(void *argument)
 					if (responseMsg.Command[1] != SIGNAL_OPEN && responseMsg.Command[1] != SIGNAL_CLOSED)
 					{
 						if (responseMsg.Size == 2)
-							actualFloor = GetFloorCharFromFloorNumberString(responseMsg.Command[1], '0');
+							elevators[intElevator].actualFloor = GetFloorCharFromFloorNumberString(responseMsg.Command[1], '0');
 						else if (responseMsg.Size == 3)
-							actualFloor = GetFloorCharFromFloorNumberString(responseMsg.Command[2], responseMsg.Command[1]);
+							elevators[intElevator].actualFloor = GetFloorCharFromFloorNumberString(responseMsg.Command[2], responseMsg.Command[1]);
 
-						if (actualFloor == targetFloor)
+						if (elevators[intElevator].actualFloor == elevators[intElevator].targetFloor)
 							StopElevator(elevator);
 					}
 					else
 					{
 						if (responseMsg.Command[1] == SIGNAL_CLOSED)
-							SetMovement(elevator, actualFloor, targetFloor);
+							SetMovement(elevator, elevators[intElevator].actualFloor, elevators[intElevator].targetFloor);
 					}
 				}
 			}
@@ -340,15 +383,15 @@ void ThreadRight(void *argument)
 			statusCommand = osMessageQueueGet(qidRightCommands, &commandMsg, 0U, osWaitForever);
 			if (statusCommand == osOK)
 			{
-				elevatorStatus = BUSY;
+				elevators[intElevator].elevatorStatus = BUSY;
 
 				if (commandMsg.Size == 3)
-					targetFloor = commandMsg.Command[2];
+					elevators[intElevator].targetFloor = commandMsg.Command[2];
 
 				else if (commandMsg.Size == 5)
-					targetFloor = GetFloorCharFromFloorNumberString(commandMsg.Command[3], commandMsg.Command[2]);
+					elevators[intElevator].targetFloor = GetFloorCharFromFloorNumberString(commandMsg.Command[3], commandMsg.Command[2]);
 
-				ChangeDoorStatus(commandMsg.Command[0], CLOSED);
+				ChangeDoorStatus(elevator, CLOSED);
 			}
 		}
 	}
@@ -495,4 +538,42 @@ char GetFloorCharFromFloorNumberString(char floorNumber, char isHigher)
 		else if (floorNumber == '5')
 			return FLOOR_15;
 	}
+}
+
+int GetFloorIntFromFloorNumberChar(char floorNumberUnit, char floorNumberDezena, char floor)
+{
+	char floorNumber = floor == ' ' ? GetFloorCharFromFloorNumberString(floorNumberUnit, floorNumberDezena) : floor;
+
+	if (floorNumber == FLOOR_0)
+		return 0;
+	else if (floorNumber == FLOOR_1)
+		return 1;
+	else if (floorNumber == FLOOR_2)
+		return 2;
+	else if (floorNumber == FLOOR_3)
+		return 3;
+	else if (floorNumber == FLOOR_4)
+		return 4;
+	else if (floorNumber == FLOOR_5)
+		return 5;
+	else if (floorNumber == FLOOR_6)
+		return 6;
+	else if (floorNumber == FLOOR_7)
+		return 7;
+	else if (floorNumber == FLOOR_8)
+		return 8;
+	else if (floorNumber == FLOOR_9)
+		return 9;
+	else if (floorNumber == FLOOR_10)
+		return 10;
+	else if (floorNumber == FLOOR_11)
+		return 11;
+	else if (floorNumber == FLOOR_12)
+		return 12;
+	else if (floorNumber == FLOOR_13)
+		return 13;
+	else if (floorNumber == FLOOR_14)
+		return 14;
+	else if (floorNumber == FLOOR_15)
+		return 15;
 }
